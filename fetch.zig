@@ -26,6 +26,7 @@ pub const GitDependency = struct {
     name: []const u8,
     url: []const u8,
     commit: []const u8,
+    recursive: bool = false,
 };
 
 pub const Dependency = union(enum) {
@@ -39,7 +40,8 @@ pub const Dependency = union(enum) {
         return switch (a) {
             .git => std.mem.eql(u8, a.git.name, b.git.name) and
                 std.mem.eql(u8, a.git.url, b.git.url) and
-                std.mem.eql(u8, a.git.commit, b.git.commit),
+                std.mem.eql(u8, a.git.commit, b.git.commit) and
+                a.git.recursive == b.git.recursive,
         };
     }
 };
@@ -199,8 +201,16 @@ fn readFetchCache(builder: *std.build.Builder) !?[]const Dependency {
             const name = builder.dupe(try reader.readUntilDelimiter(&read_buf, '\n'));
             const url = builder.dupe(try reader.readUntilDelimiter(&read_buf, '\n'));
             const commit = builder.dupe(try reader.readUntilDelimiter(&read_buf, '\n'));
+            const recursive = try parseBool(try reader.readUntilDelimiter(&read_buf, '\n'));
 
-            try dependencies.append(.{ .git = .{ .name = name, .url = url, .commit = commit } });
+            try dependencies.append(.{
+                .git = .{
+                    .name = name,
+                    .url = url,
+                    .commit = commit,
+                    .recursive = recursive,
+                },
+            });
         } else {
             return error.InvalidVcsType;
         }
@@ -223,6 +233,7 @@ fn writeFetchCache(builder: *std.build.Builder, deps: []const Dependency) !void 
                 try writer.print("{s}\n", .{git_dep.name});
                 try writer.print("{s}\n", .{git_dep.url});
                 try writer.print("{s}\n", .{git_dep.commit});
+                try writer.print("{}\n", .{git_dep.recursive});
             },
         }
     }
@@ -257,6 +268,11 @@ const GitFetch = struct {
             const clone_args = &.{ "git", "clone", git_fetch.dep.url, git_fetch.repo_dir };
             try runChildProcess(builder, builder.build_root, clone_args, false);
         };
+
+        if (git_fetch.dep.recursive) {
+            const submodule_args = &.{ "git", "submodule", "update", "--init", "--recursive" };
+            try runChildProcess(builder, git_fetch.repo_dir, submodule_args, false);
+        }
 
         const checkout_args = &.{ "git", "checkout", git_fetch.dep.commit };
         try runChildProcess(builder, git_fetch.repo_dir, checkout_args, false);
@@ -303,5 +319,15 @@ fn runChildProcess(
         else => {
             return error.RunChildProcessFailed;
         },
+    }
+}
+
+fn parseBool(str: []const u8) !bool {
+    if (std.mem.eql(u8, str, "true")) {
+        return true;
+    } else if (std.mem.eql(u8, str, "false")) {
+        return false;
+    } else {
+        return error.ParseBoolFailed;
     }
 }

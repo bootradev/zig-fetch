@@ -14,7 +14,7 @@ const deps = [_]fetch.Dependency{
 };
 
 pub fn build(builder: *std.build.Builder) !void {
-    fetch.addStep(builder, "example-step", "test passing a step through build.zig");
-    fetch.addOption(builder, bool, "example-option", "test passing an option through build.zig");
+    fetch.addStep(builder, "example-step", "Test passing a step through build.zig");
+    fetch.addOption(builder, bool, "example-option", "Test passing an option through build.zig");
     try fetch.fetchAndBuild(builder, "zig-deps", &deps, "compile.zig");
 }
