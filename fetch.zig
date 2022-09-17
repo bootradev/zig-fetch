@@ -3,6 +3,25 @@
 
 const std = @import("std");
 
+// adds a step that will be passed through to the build file
+pub fn addStep(
+    builder: *std.build.Builder,
+    name: []const u8,
+    description: []const u8,
+) void {
+    builder.step(name, description).dependOn(builder.getInstallStep());
+}
+
+// adds an option that will be passed through to the build file
+pub fn addOption(
+    builder: *std.build.Builder,
+    comptime T: type,
+    name: []const u8,
+    description: []const u8,
+) void {
+    _ = builder.option(T, name, description);
+}
+
 pub const GitDependency = struct {
     name: []const u8,
     url: []const u8,
@@ -59,12 +78,12 @@ const FetchAndBuild = struct {
 
         const git_available = checkGitAvailable(builder);
 
-        const skip_fetch = builder.option(
+        const fetch_skip = builder.option(
             bool,
             "fetch-skip",
             "Skip fetching dependencies",
         ) orelse false;
-        if (!skip_fetch) {
+        if (!fetch_skip) {
             const fetch_cache = try readFetchCache(builder);
 
             for (deps) |dep| {
@@ -125,7 +144,7 @@ const FetchAndBuild = struct {
             try zig_build_args.append(arg);
         }
 
-        try runChildProcess(builder, builder.build_root, zig_build_args.items, false);
+        runChildProcess(builder, builder.build_root, zig_build_args.items, false) catch return;
     }
 };
 
@@ -253,11 +272,9 @@ fn runChildProcess(
 
     switch (try child_process.spawnAndWait()) {
         .Exited => |code| if (code != 0) {
-            std.log.err("Command failed with exit code {}!", .{code});
             return error.RunChildProcessFailed;
         },
-        else => |result| {
-            std.log.err("Command failed with result {}!", .{result});
+        else => {
             return error.RunChildProcessFailed;
         },
     }

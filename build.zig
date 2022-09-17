@@ -1,4 +1,4 @@
-// this file is an example of what a build.zig file using zig-fetch would look like
+// this file is an example of what a build.zig file using zig-fetch might look like
 
 const fetch = @import("fetch.zig");
 const std = @import("std");
@@ -14,5 +14,7 @@ const deps = [_]fetch.Dependency{
 };
 
 pub fn build(builder: *std.build.Builder) !void {
+    fetch.addStep(builder, "example-step", "test passing a step through build.zig");
+    fetch.addOption(builder, bool, "example-option", "test passing an option through build.zig");
     try fetch.fetchAndBuild(builder, "zig-deps", &deps, "compile.zig");
 }
