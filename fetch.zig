@@ -60,6 +60,7 @@ const FetchAndBuild = struct {
     deps: []const Dependency,
     build_file: []const u8,
     write_fetch_cache: bool,
+    run_zig_build: bool,
 
     fn init(
         builder: *std.build.Builder,
@@ -67,6 +68,29 @@ const FetchAndBuild = struct {
         deps: []const Dependency,
         build_file: []const u8,
     ) !*FetchAndBuild {
+        const fetch_skip = builder.option(
+            bool,
+            "fetch-skip",
+            "Skip fetch dependencies",
+        ) orelse false;
+
+        const fetch_only = builder.option(
+            bool,
+            "fetch-only",
+            "Only fetch dependencies",
+        ) orelse false;
+
+        const fetch_force = builder.option(
+            bool,
+            "fetch-force",
+            "Force fetch dependencies",
+        ) orelse false;
+
+        if (fetch_skip and fetch_only) {
+            std.log.err("fetch-skip and fetch-only are mutually exclusive!", .{});
+            return error.InvalidOptions;
+        }
+
         var fetch_and_build = try builder.allocator.create(FetchAndBuild);
         fetch_and_build.* = .{
             .builder = builder,
@@ -74,29 +98,27 @@ const FetchAndBuild = struct {
             .deps = try builder.allocator.dupe(Dependency, deps),
             .build_file = builder.dupe(build_file),
             .write_fetch_cache = false,
+            .run_zig_build = !fetch_only,
         };
 
         const git_available = checkGitAvailable(builder);
 
-        const fetch_skip = builder.option(
-            bool,
-            "fetch-skip",
-            "Skip fetching dependencies",
-        ) orelse false;
         if (!fetch_skip) {
             const fetch_cache = try readFetchCache(builder);
 
             for (deps) |dep| {
-                if (fetch_cache) |cache| {
-                    var dep_in_cache = false;
-                    for (cache) |cache_dep| {
-                        if (dep.eql(cache_dep)) {
-                            dep_in_cache = true;
-                            break;
+                if (!fetch_force) {
+                    if (fetch_cache) |cache| {
+                        var dep_in_cache = false;
+                        for (cache) |cache_dep| {
+                            if (dep.eql(cache_dep)) {
+                                dep_in_cache = true;
+                                break;
+                            }
                         }
-                    }
-                    if (dep_in_cache) {
-                        continue;
+                        if (dep_in_cache) {
+                            continue;
+                        }
                     }
                 }
 
@@ -124,27 +146,31 @@ const FetchAndBuild = struct {
             try writeFetchCache(builder, fetch_and_build.deps);
         }
 
-        const args = try std.process.argsAlloc(builder.allocator);
-        defer std.process.argsFree(builder.allocator, args);
+        if (fetch_and_build.run_zig_build) {
+            const args = try std.process.argsAlloc(builder.allocator);
+            defer std.process.argsFree(builder.allocator, args);
 
-        // TODO: this might be platform specific.
-        // on windows, 5 args are prepended before the user defined args
-        const build_args_offset = 5;
+            // TODO: this might be platform specific.
+            // on windows, 5 args are prepended before the user defined args
+            const args_offset = 5;
 
-        var zig_build_args = std.ArrayList([]const u8).init(builder.allocator);
-        defer zig_build_args.deinit();
+            var build_args = std.ArrayList([]const u8).init(builder.allocator);
+            defer build_args.deinit();
 
-        try zig_build_args.appendSlice(
-            &.{ "zig", "build", "--build-file", fetch_and_build.build_file },
-        );
-        for (args[build_args_offset..]) |arg| {
-            if (std.mem.startsWith(u8, arg, "-Dfetch-skip=")) {
-                continue;
+            try build_args.appendSlice(
+                &.{ "zig", "build", "--build-file", fetch_and_build.build_file },
+            );
+            for (args[args_offset..]) |arg| {
+                if (std.mem.startsWith(u8, arg, "-Dfetch-skip=") or
+                    std.mem.startsWith(u8, arg, "-Dfetch-only=") or
+                    std.mem.startsWith(u8, arg, "-Dfetch-force="))
+                {
+                    continue;
+                }
+                try build_args.append(arg);
             }
-            try zig_build_args.append(arg);
+            runChildProcess(builder, builder.build_root, build_args.items, false) catch return;
         }
-
-        runChildProcess(builder, builder.build_root, zig_build_args.items, false) catch return;
     }
 };
 
