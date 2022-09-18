@@ -9,7 +9,7 @@ const deps = [_]fetch.Dependency{
         .vcs = .{
             .git = .{
                 .url = "https://github.com/bootradev/zig-fetch-example",
-                .commit = "b64ecf93ce86163d609afd5498eda5b86bb34eb6",
+                .commit = "e18e2edf11d43d527885861c5b07c4f2fb1ef146",
                 .recursive = true,
             },
         },
