@@ -23,27 +23,16 @@ pub fn addOption(
 }
 
 pub const GitDependency = struct {
-    name: []const u8,
     url: []const u8,
     commit: []const u8,
     recursive: bool = false,
 };
 
-pub const Dependency = union(enum) {
-    git: GitDependency,
-
-    pub fn eql(a: Dependency, b: Dependency) bool {
-        if (std.meta.activeTag(a) != std.meta.activeTag(b)) {
-            return false;
-        }
-
-        return switch (a) {
-            .git => std.mem.eql(u8, a.git.name, b.git.name) and
-                std.mem.eql(u8, a.git.url, b.git.url) and
-                std.mem.eql(u8, a.git.commit, b.git.commit) and
-                a.git.recursive == b.git.recursive,
-        };
-    }
+pub const Dependency = struct {
+    name: []const u8,
+    vcs: union(enum) {
+        git: GitDependency,
+    },
 };
 
 pub fn fetchAndBuild(
@@ -113,7 +102,7 @@ const FetchAndBuild = struct {
                     if (fetch_cache) |cache| {
                         var dep_in_cache = false;
                         for (cache) |cache_dep| {
-                            if (dep.eql(cache_dep)) {
+                            if (dependencyEql(dep, cache_dep)) {
                                 dep_in_cache = true;
                                 break;
                             }
@@ -124,15 +113,20 @@ const FetchAndBuild = struct {
                     }
                 }
 
-                switch (dep) {
+                const fetch_dir = builder.pathJoin(&.{ builder.build_root, deps_dir, dep.name });
+                const recursive_fetch = try RecursiveFetch.init(builder, fetch_dir);
+                fetch_and_build.step.dependOn(&recursive_fetch.step);
+
+                switch (dep.vcs) {
                     .git => |git_dep| {
                         if (!git_available) {
                             return error.GitNotAvailable;
                         }
-                        const git_fetch = try GitFetch.init(builder, deps_dir, git_dep);
-                        fetch_and_build.step.dependOn(&git_fetch.step);
+                        const git_fetch = try GitFetch.init(builder, fetch_dir, git_dep);
+                        recursive_fetch.step.dependOn(&git_fetch.step);
                     },
                 }
+
                 fetch_and_build.write_fetch_cache = true;
             }
         }
@@ -156,10 +150,10 @@ const FetchAndBuild = struct {
             // on windows, 5 args are prepended before the user defined args
             const args_offset = 5;
 
-            var build_args = std.ArrayList([]const u8).init(builder.allocator);
-            defer build_args.deinit();
+            var build_args_list = std.ArrayList([]const u8).init(builder.allocator);
+            defer build_args_list.deinit();
 
-            try build_args.appendSlice(
+            try build_args_list.appendSlice(
                 &.{ "zig", "build", "--build-file", fetch_and_build.build_file },
             );
             for (args[args_offset..]) |arg| {
@@ -169,9 +163,15 @@ const FetchAndBuild = struct {
                 {
                     continue;
                 }
-                try build_args.append(arg);
+                try build_args_list.append(arg);
             }
-            runChildProcess(builder, builder.build_root, build_args.items, false) catch return;
+
+            if (fetch_and_build.write_fetch_cache or builder.verbose) {
+                std.log.info("building with build file {s}...", .{fetch_and_build.build_file});
+            }
+
+            const build_args = build_args_list.items;
+            runChildProcess(builder, builder.build_root, build_args, true) catch return;
         }
     }
 };
@@ -189,31 +189,34 @@ fn readFetchCache(builder: *std.build.Builder) !?[]const Dependency {
     var dependencies = std.ArrayList(Dependency).init(builder.allocator);
     var read_buf: [256]u8 = undefined;
     while (true) {
-        const vcs_type = reader.readUntilDelimiter(&read_buf, '\n') catch |e| {
+        const name = builder.dupe(reader.readUntilDelimiter(&read_buf, '\n') catch |e| {
             if (e == error.EndOfStream) {
                 break;
             } else {
                 return e;
             }
-        };
+        });
 
+        var dependency: Dependency = undefined;
+        dependency.name = name;
+
+        const vcs_type = try reader.readUntilDelimiter(&read_buf, '\n');
         if (std.mem.eql(u8, vcs_type, "git")) {
-            const name = builder.dupe(try reader.readUntilDelimiter(&read_buf, '\n'));
             const url = builder.dupe(try reader.readUntilDelimiter(&read_buf, '\n'));
             const commit = builder.dupe(try reader.readUntilDelimiter(&read_buf, '\n'));
             const recursive = try parseBool(try reader.readUntilDelimiter(&read_buf, '\n'));
-
-            try dependencies.append(.{
+            dependency.vcs = .{
                 .git = .{
-                    .name = name,
                     .url = url,
                     .commit = commit,
                     .recursive = recursive,
                 },
-            });
+            };
         } else {
             return error.InvalidVcsType;
         }
+
+        try dependencies.append(dependency);
     }
 
     return dependencies.toOwnedSlice();
@@ -227,10 +230,10 @@ fn writeFetchCache(builder: *std.build.Builder, deps: []const Dependency) !void 
     const writer = cache_file.writer();
 
     for (deps) |dep| {
-        switch (dep) {
+        try writer.print("{s}\n", .{dep.name});
+        switch (dep.vcs) {
             .git => |git_dep| {
                 try writer.print("git\n", .{});
-                try writer.print("{s}\n", .{git_dep.name});
                 try writer.print("{s}\n", .{git_dep.url});
                 try writer.print("{s}\n", .{git_dep.commit});
                 try writer.print("{}\n", .{git_dep.recursive});
@@ -239,15 +242,49 @@ fn writeFetchCache(builder: *std.build.Builder, deps: []const Dependency) !void 
     }
 }
 
+const RecursiveFetch = struct {
+    builder: *std.build.Builder,
+    step: std.build.Step,
+    dir: []const u8,
+
+    pub fn init(builder: *std.build.Builder, dir: []const u8) !*RecursiveFetch {
+        var recursive_fetch = try builder.allocator.create(RecursiveFetch);
+        recursive_fetch.* = .{
+            .builder = builder,
+            .step = std.build.Step.init(.custom, "recursive fetch", builder.allocator, make),
+            .dir = dir,
+        };
+        return recursive_fetch;
+    }
+
+    pub fn make(step: *std.build.Step) !void {
+        const recursive_fetch = @fieldParentPtr(RecursiveFetch, "step", step);
+        const builder = recursive_fetch.builder;
+
+        std.log.info("recursively fetching within {s}...", .{recursive_fetch.dir});
+
+        const build_args = &.{ "zig", "build", "-Dfetch-only=true" };
+        const result = try runChildProcessExec(builder, recursive_fetch.dir, build_args);
+        defer builder.allocator.free(result.stdout);
+        defer builder.allocator.free(result.stderr);
+
+        try logChildProcessOutput(result.stdout);
+        // only log error if it's not related to missing zig-fetch functionality
+        if (!std.mem.startsWith(u8, result.stderr, "error: Invalid option: -Dfetch-only")) {
+            try logChildProcessOutput(result.stderr);
+        }
+    }
+};
+
 const GitFetch = struct {
     builder: *std.build.Builder,
     step: std.build.Step,
     dep: GitDependency,
-    repo_dir: []const u8,
+    dir: []const u8,
 
     pub fn init(
         builder: *std.build.Builder,
-        deps_dir: []const u8,
+        dir: []const u8,
         dep: GitDependency,
     ) !*GitFetch {
         var git_fetch = try builder.allocator.create(GitFetch);
@@ -255,7 +292,7 @@ const GitFetch = struct {
             .builder = builder,
             .step = std.build.Step.init(.custom, "git fetch", builder.allocator, make),
             .dep = dep,
-            .repo_dir = builder.pathJoin(&.{ builder.build_root, deps_dir, dep.name }),
+            .dir = dir,
         };
         return git_fetch;
     }
@@ -264,24 +301,26 @@ const GitFetch = struct {
         const git_fetch = @fieldParentPtr(GitFetch, "step", step);
         const builder = git_fetch.builder;
 
-        std.fs.accessAbsolute(git_fetch.repo_dir, .{}) catch {
-            const clone_args = &.{ "git", "clone", git_fetch.dep.url, git_fetch.repo_dir };
-            try runChildProcess(builder, builder.build_root, clone_args, false);
+        std.log.info("fetching from git into {s}...", .{git_fetch.dir});
+
+        std.fs.accessAbsolute(git_fetch.dir, .{}) catch {
+            const clone_args = &.{ "git", "clone", git_fetch.dep.url, git_fetch.dir };
+            try runChildProcess(builder, builder.build_root, clone_args, builder.verbose);
         };
 
         if (git_fetch.dep.recursive) {
             const submodule_args = &.{ "git", "submodule", "update", "--init", "--recursive" };
-            try runChildProcess(builder, git_fetch.repo_dir, submodule_args, false);
+            try runChildProcess(builder, git_fetch.dir, submodule_args, builder.verbose);
         }
 
         const checkout_args = &.{ "git", "checkout", git_fetch.dep.commit };
-        try runChildProcess(builder, git_fetch.repo_dir, checkout_args, false);
+        try runChildProcess(builder, git_fetch.dir, checkout_args, builder.verbose);
     }
 };
 
 fn checkGitAvailable(builder: *std.build.Builder) bool {
-    const git_version_args = &.{ "git", "--version" };
-    runChildProcess(builder, builder.build_root, git_version_args, true) catch return false;
+    const args = &.{ "git", "--version" };
+    runChildProcess(builder, builder.build_root, args, builder.verbose) catch return false;
     return true;
 }
 
@@ -289,16 +328,31 @@ fn runChildProcess(
     builder: *std.build.Builder,
     cwd: []const u8,
     args: []const []const u8,
-    ignore_stdout: bool,
+    log_output: bool,
 ) !void {
-    var child_process = std.ChildProcess.init(args, builder.allocator);
-    child_process.cwd = cwd;
-    child_process.env_map = builder.env_map;
-    child_process.stdin_behavior = .Ignore;
-    if (ignore_stdout) {
-        child_process.stdout_behavior = .Ignore;
+    const result = try runChildProcessExec(builder, cwd, args);
+    defer builder.allocator.free(result.stdout);
+    defer builder.allocator.free(result.stderr);
+    if (log_output) {
+        try logChildProcessOutput(result.stdout);
+        try logChildProcessOutput(result.stderr);
     }
 
+    switch (result.term) {
+        .Exited => |code| if (code != 0) {
+            return error.RunChildProcessFailed;
+        },
+        else => {
+            return error.RunChildProcessFailed;
+        },
+    }
+}
+
+fn runChildProcessExec(
+    builder: *std.build.Builder,
+    cwd: []const u8,
+    args: []const []const u8,
+) !std.ChildProcess.ExecResult {
     if (builder.verbose) {
         var command = std.ArrayList(u8).init(builder.allocator);
         defer command.deinit();
@@ -312,14 +366,26 @@ fn runChildProcess(
         std.log.info("{s}", .{command.items});
     }
 
-    switch (try child_process.spawnAndWait()) {
-        .Exited => |code| if (code != 0) {
-            return error.RunChildProcessFailed;
-        },
-        else => {
-            return error.RunChildProcessFailed;
-        },
-    }
+    return try std.ChildProcess.exec(.{
+        .allocator = builder.allocator,
+        .argv = args,
+        .cwd = cwd,
+        .env_map = builder.env_map,
+    });
+}
+
+fn logChildProcessOutput(output: []const u8) !void {
+    try std.io.getStdOut().writer().writeAll(output);
+}
+
+pub fn dependencyEql(a: Dependency, b: Dependency) bool {
+    return std.mem.eql(u8, a.name, b.name) and
+        std.meta.activeTag(a.vcs) == std.meta.activeTag(b.vcs) and
+        switch (a.vcs) {
+        .git => std.mem.eql(u8, a.vcs.git.url, b.vcs.git.url) and
+            std.mem.eql(u8, a.vcs.git.commit, b.vcs.git.commit) and
+            a.vcs.git.recursive == b.vcs.git.recursive,
+    };
 }
 
 fn parseBool(str: []const u8) !bool {

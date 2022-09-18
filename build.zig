@@ -5,10 +5,13 @@ const std = @import("std");
 
 const deps = [_]fetch.Dependency{
     .{
-        .git = .{
-            .name = "apple_pie",
-            .url = "https://github.com/Luukdegram/apple_pie",
-            .commit = "5eaaabdced4f9b8d6cee947b465e7ea16ea61f42",
+        .name = "zig-fetch-example",
+        .vcs = .{
+            .git = .{
+                .url = "https://github.com/bootradev/zig-fetch-example",
+                .commit = "b64ecf93ce86163d609afd5498eda5b86bb34eb6",
+                .recursive = true,
+            },
         },
     },
 };

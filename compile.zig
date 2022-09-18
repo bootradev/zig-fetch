@@ -2,10 +2,10 @@
 // make sure the parent import directory matches what is passed into fetchAndBuild
 
 const std = @import("std");
-const apple_pie = @import("zig-deps/apple_pie/src/apple_pie.zig");
+const zig_fetch_example = @import("zig-deps/zig-fetch-example/build.zig");
 
 pub fn build(builder: *std.build.Builder) !void {
-    std.log.info("Successfully imported {}!", .{apple_pie});
+    std.log.info("the magic number is {}!", .{zig_fetch_example.magic_number});
 
     const example_step = builder.step("example-step", "test passing a step through build.zig");
     example_step.dependOn(&(try ExampleStep.init(builder)).step);
