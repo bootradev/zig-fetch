@@ -41,6 +41,10 @@ pub fn fetchAndBuild(
     deps: []const Dependency,
     build_file: []const u8,
 ) !void {
+    // no-op standard options to pass through to build file
+    _ = builder.standardTargetOptions(.{});
+    _ = builder.standardReleaseOptions();
+
     const fetch_and_build = try FetchAndBuild.init(builder, deps_dir, deps, build_file);
     builder.getInstallStep().dependOn(&fetch_and_build.step);
 }
@@ -346,15 +350,18 @@ fn runChildProcess(
     args: []const []const u8,
     log_output: bool,
 ) !void {
-    const result = try runChildProcessExec(builder, cwd, args);
-    defer builder.allocator.free(result.stdout);
-    defer builder.allocator.free(result.stderr);
-    if (log_output) {
-        try logChildProcessOutput(result.stdout);
-        try logChildProcessOutput(result.stderr);
+    try logCommand(builder, args);
+
+    var child_process = std.ChildProcess.init(args, builder.allocator);
+    child_process.cwd = cwd;
+    child_process.env_map = builder.env_map;
+    child_process.stdin_behavior = .Ignore;
+    if (!log_output) {
+        child_process.stdout_behavior = .Ignore;
+        child_process.stderr_behavior = .Ignore;
     }
 
-    switch (result.term) {
+    switch (try child_process.spawnAndWait()) {
         .Exited => |code| if (code != 0) {
             return error.RunChildProcessFailed;
         },
@@ -369,6 +376,17 @@ fn runChildProcessExec(
     cwd: []const u8,
     args: []const []const u8,
 ) !std.ChildProcess.ExecResult {
+    try logCommand(builder, args);
+
+    return try std.ChildProcess.exec(.{
+        .allocator = builder.allocator,
+        .argv = args,
+        .cwd = cwd,
+        .env_map = builder.env_map,
+    });
+}
+
+fn logCommand(builder: *std.build.Builder, args: []const []const u8) !void {
     if (builder.verbose) {
         var command = std.ArrayList(u8).init(builder.allocator);
         defer command.deinit();
@@ -381,13 +399,6 @@ fn runChildProcessExec(
 
         std.log.info("{s}", .{command.items});
     }
-
-    return try std.ChildProcess.exec(.{
-        .allocator = builder.allocator,
-        .argv = args,
-        .cwd = cwd,
-        .env_map = builder.env_map,
-    });
 }
 
 fn logChildProcessOutput(output: []const u8) !void {
