@@ -114,7 +114,7 @@ const FetchAndBuild = struct {
                 }
 
                 const fetch_dir = builder.pathJoin(&.{ builder.build_root, deps_dir, dep.name });
-                const recursive_fetch = try RecursiveFetch.init(builder, fetch_dir);
+                const recursive_fetch = try RecursiveFetch.init(builder, fetch_dir, fetch_force);
                 fetch_and_build.step.dependOn(&recursive_fetch.step);
 
                 switch (dep.vcs) {
@@ -246,13 +246,19 @@ const RecursiveFetch = struct {
     builder: *std.build.Builder,
     step: std.build.Step,
     dir: []const u8,
+    fetch_force: bool,
 
-    pub fn init(builder: *std.build.Builder, dir: []const u8) !*RecursiveFetch {
+    pub fn init(
+        builder: *std.build.Builder,
+        dir: []const u8,
+        fetch_force: bool,
+    ) !*RecursiveFetch {
         var recursive_fetch = try builder.allocator.create(RecursiveFetch);
         recursive_fetch.* = .{
             .builder = builder,
             .step = std.build.Step.init(.custom, "recursive fetch", builder.allocator, make),
             .dir = dir,
+            .fetch_force = fetch_force,
         };
         return recursive_fetch;
     }
@@ -263,7 +269,17 @@ const RecursiveFetch = struct {
 
         std.log.info("recursively fetching within {s}...", .{recursive_fetch.dir});
 
-        const build_args = &.{ "zig", "build", "-Dfetch-only=true" };
+        var build_args_list = std.ArrayList([]const u8).init(builder.allocator);
+        defer build_args_list.deinit();
+        try build_args_list.appendSlice(&.{ "zig", "build", "-Dfetch-only=true" });
+        if (builder.verbose) {
+            try build_args_list.append("--verbose");
+        }
+        if (recursive_fetch.fetch_force) {
+            try build_args_list.append("-Dfetch-force=true");
+        }
+
+        const build_args = build_args_list.items;
         const result = try runChildProcessExec(builder, recursive_fetch.dir, build_args);
         defer builder.allocator.free(result.stdout);
         defer builder.allocator.free(result.stderr);
