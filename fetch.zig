@@ -271,28 +271,34 @@ const RecursiveFetch = struct {
         const recursive_fetch = @fieldParentPtr(RecursiveFetch, "step", step);
         const builder = recursive_fetch.builder;
 
-        std.log.info("recursively fetching within {s}...", .{recursive_fetch.dir});
+        var dir = try std.fs.openDirAbsolute(recursive_fetch.dir, .{});
+        defer dir.close();
+        if (dir.openFile("build.zig", .{})) |file| {
+            file.close();
 
-        var build_args_list = std.ArrayList([]const u8).init(builder.allocator);
-        defer build_args_list.deinit();
-        try build_args_list.appendSlice(&.{ "zig", "build", "-Dfetch-only=true" });
-        if (builder.verbose) {
-            try build_args_list.append("--verbose");
-        }
-        if (recursive_fetch.fetch_force) {
-            try build_args_list.append("-Dfetch-force=true");
-        }
+            std.log.info("recursively fetching within {s}...", .{recursive_fetch.dir});
 
-        const build_args = build_args_list.items;
-        const result = try runChildProcessExec(builder, recursive_fetch.dir, build_args);
-        defer builder.allocator.free(result.stdout);
-        defer builder.allocator.free(result.stderr);
+            var build_args_list = std.ArrayList([]const u8).init(builder.allocator);
+            defer build_args_list.deinit();
+            try build_args_list.appendSlice(&.{ "zig", "build", "-Dfetch-only=true" });
+            if (builder.verbose) {
+                try build_args_list.append("--verbose");
+            }
+            if (recursive_fetch.fetch_force) {
+                try build_args_list.append("-Dfetch-force=true");
+            }
 
-        try logChildProcessOutput(result.stdout);
-        // only log error if it's not related to missing zig-fetch functionality
-        if (!std.mem.startsWith(u8, result.stderr, "error: Invalid option: -Dfetch-only")) {
-            try logChildProcessOutput(result.stderr);
-        }
+            const build_args = build_args_list.items;
+            const result = try runChildProcessExec(builder, recursive_fetch.dir, build_args);
+            defer builder.allocator.free(result.stdout);
+            defer builder.allocator.free(result.stderr);
+
+            try logChildProcessOutput(result.stdout);
+            // only log error if it's not related to missing zig-fetch functionality
+            if (!std.mem.startsWith(u8, result.stderr, "error: Invalid option: -Dfetch-only")) {
+                try logChildProcessOutput(result.stderr);
+            }
+        } else |_| {}
     }
 };
 
