@@ -329,10 +329,18 @@ const GitFetch = struct {
 
         std.log.info("fetching from git into {s}...", .{git_fetch.dir});
 
+        var dir_exists = true;
         std.fs.accessAbsolute(git_fetch.dir, .{}) catch {
+            dir_exists = false;
+        };
+
+        if (dir_exists) {
+            const fetch_args = &.{ "git", "fetch" };
+            try runChildProcess(builder, builder.build_root, fetch_args, builder.verbose);
+        } else {
             const clone_args = &.{ "git", "clone", git_fetch.dep.url, git_fetch.dir };
             try runChildProcess(builder, builder.build_root, clone_args, builder.verbose);
-        };
+        }
 
         if (git_fetch.dep.recursive) {
             const submodule_args = &.{ "git", "submodule", "update", "--init", "--recursive" };
