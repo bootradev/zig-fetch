@@ -13,6 +13,7 @@ const deps = [_]fetch.Dependency{
                 .recursive = true,
             },
         },
+        .recursive = true,
     },
 };
 

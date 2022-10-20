@@ -25,11 +25,12 @@ pub fn addOption(
 pub const GitDependency = struct {
     url: []const u8,
     commit: []const u8,
-    recursive: bool = false,
+    recursive: bool = false, // set to true to have this dependency fetch git submodules
 };
 
 pub const Dependency = struct {
     name: []const u8,
+    recursive: bool = false, // set to true when the dependency also uses zig-fetch
     vcs: union(enum) {
         git: GitDependency,
     },
@@ -120,8 +121,12 @@ const FetchAndBuild = struct {
                 }
 
                 const fetch_dir = builder.pathJoin(&.{ builder.build_root, deps_dir, dep.name });
-                const recursive_fetch = try RecursiveFetch.init(builder, fetch_dir, fetch_force);
-                fetch_and_build.step.dependOn(&recursive_fetch.step);
+                var fetch_step = &fetch_and_build.step;
+                if (dep.recursive) {
+                    const recursive = try RecursiveFetch.init(builder, fetch_dir, fetch_force);
+                    fetch_step.dependOn(&recursive.step);
+                    fetch_step = &recursive.step;
+                }
 
                 switch (dep.vcs) {
                     .git => |git_dep| {
@@ -129,7 +134,7 @@ const FetchAndBuild = struct {
                             return error.GitNotAvailable;
                         }
                         const git_fetch = try GitFetch.init(builder, fetch_dir, git_dep);
-                        recursive_fetch.step.dependOn(&git_fetch.step);
+                        fetch_step.dependOn(&git_fetch.step);
                     },
                 }
 
@@ -289,15 +294,7 @@ const RecursiveFetch = struct {
             }
 
             const build_args = build_args_list.items;
-            const result = try runChildProcessExec(builder, recursive_fetch.dir, build_args);
-            defer builder.allocator.free(result.stdout);
-            defer builder.allocator.free(result.stderr);
-
-            try logChildProcessOutput(result.stdout);
-            // only log error if it's not related to missing zig-fetch functionality
-            if (!std.mem.startsWith(u8, result.stderr, "error: Invalid option: -Dfetch-only")) {
-                try logChildProcessOutput(result.stderr);
-            }
+            try runChildProcess(builder, recursive_fetch.dir, build_args, true);
         } else |_| {}
     }
 };
@@ -366,38 +363,24 @@ fn runChildProcess(
 ) !void {
     try logCommand(builder, args);
 
-    var child_process = std.ChildProcess.init(args, builder.allocator);
-    child_process.cwd = cwd;
-    child_process.env_map = builder.env_map;
-    child_process.stdin_behavior = .Ignore;
-    if (!log_output) {
-        child_process.stdout_behavior = .Ignore;
-        child_process.stderr_behavior = .Ignore;
-    }
-
-    switch (try child_process.spawnAndWait()) {
-        .Exited => |code| if (code != 0) {
-            return error.RunChildProcessFailed;
-        },
-        else => {
-            return error.RunChildProcessFailed;
-        },
-    }
-}
-
-fn runChildProcessExec(
-    builder: *std.build.Builder,
-    cwd: []const u8,
-    args: []const []const u8,
-) !std.ChildProcess.ExecResult {
-    try logCommand(builder, args);
-
-    return try std.ChildProcess.exec(.{
+    const result = try std.ChildProcess.exec(.{
         .allocator = builder.allocator,
         .argv = args,
         .cwd = cwd,
         .env_map = builder.env_map,
     });
+    defer builder.allocator.free(result.stdout);
+    defer builder.allocator.free(result.stderr);
+
+    const err = result.term != .Exited or result.term.Exited != 0;
+    if (log_output or err) {
+        try std.io.getStdOut().writer().writeAll(result.stdout);
+        try std.io.getStdErr().writer().writeAll(result.stderr);
+    }
+
+    if (err) {
+        return error.RunChildProcessFailed;
+    }
 }
 
 fn logCommand(builder: *std.build.Builder, args: []const []const u8) !void {
@@ -415,12 +398,9 @@ fn logCommand(builder: *std.build.Builder, args: []const []const u8) !void {
     }
 }
 
-fn logChildProcessOutput(output: []const u8) !void {
-    try std.io.getStdOut().writer().writeAll(output);
-}
-
 pub fn dependencyEql(a: Dependency, b: Dependency) bool {
     return std.mem.eql(u8, a.name, b.name) and
+        a.recursive == b.recursive and
         std.meta.activeTag(a.vcs) == std.meta.activeTag(b.vcs) and
         switch (a.vcs) {
         .git => std.mem.eql(u8, a.vcs.git.url, b.vcs.git.url) and
