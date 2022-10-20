@@ -56,6 +56,7 @@ const FetchAndBuild = struct {
     build_file: []const u8,
     write_fetch_cache: bool,
     run_zig_build: bool,
+    fetch_cache_path: []const u8,
 
     fn init(
         builder: *std.build.Builder,
@@ -94,12 +95,13 @@ const FetchAndBuild = struct {
             .build_file = builder.dupe(build_file),
             .write_fetch_cache = false,
             .run_zig_build = !fetch_only,
+            .fetch_cache_path = getFetchCachePath(builder, deps_dir),
         };
 
         const git_available = checkGitAvailable(builder);
 
         if (!fetch_skip) {
-            const fetch_cache = try readFetchCache(builder);
+            const fetch_cache = try readFetchCache(builder, fetch_and_build.fetch_cache_path);
 
             for (deps) |dep| {
                 if (!fetch_force) {
@@ -143,7 +145,7 @@ const FetchAndBuild = struct {
         const builder = fetch_and_build.builder;
 
         if (fetch_and_build.write_fetch_cache) {
-            try writeFetchCache(builder, fetch_and_build.deps);
+            try writeFetchCache(fetch_and_build.fetch_cache_path, fetch_and_build.deps);
         }
 
         if (fetch_and_build.run_zig_build) {
@@ -180,12 +182,11 @@ const FetchAndBuild = struct {
     }
 };
 
-fn getFetchCachePath(builder: *std.build.Builder) []const u8 {
-    return builder.pathJoin(&.{ builder.build_root, builder.cache_root, "fetch_cache" });
+fn getFetchCachePath(builder: *std.build.Builder, deps_dir: []const u8) []const u8 {
+    return builder.pathJoin(&.{ builder.build_root, deps_dir, "fetch_cache" });
 }
 
-fn readFetchCache(builder: *std.build.Builder) !?[]const Dependency {
-    const cache_path = getFetchCachePath(builder);
+fn readFetchCache(builder: *std.build.Builder, cache_path: []const u8) !?[]const Dependency {
     const cache_file = std.fs.cwd().openFile(cache_path, .{}) catch return null;
     defer cache_file.close();
     const reader = cache_file.reader();
@@ -226,8 +227,7 @@ fn readFetchCache(builder: *std.build.Builder) !?[]const Dependency {
     return dependencies.toOwnedSlice();
 }
 
-fn writeFetchCache(builder: *std.build.Builder, deps: []const Dependency) !void {
-    const cache_path = getFetchCachePath(builder);
+fn writeFetchCache(cache_path: []const u8, deps: []const Dependency) !void {
     try std.fs.cwd().makePath(std.fs.path.dirname(cache_path) orelse unreachable);
 
     const cache_file = try std.fs.cwd().createFile(cache_path, .{});
