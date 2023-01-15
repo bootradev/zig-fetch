@@ -15,7 +15,7 @@ pub fn build(builder: *std.build.Builder) !void {
         "example-option",
         "test passing an option through build.zig",
     );
-    std.log.info("example-option: {}", .{example_option});
+    std.log.info("example-option: {any}", .{example_option});
 }
 
 const ExampleStep = struct {
