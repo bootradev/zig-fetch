@@ -50,7 +50,7 @@ pub fn fetchAndBuild(
     builder.getInstallStep().dependOn(&fetch_and_build.step);
 }
 
-const FetchAndBuild = struct {
+pub const FetchAndBuild = struct {
     builder: *std.build.Builder,
     step: std.build.Step,
     deps: []const Dependency,
@@ -59,7 +59,7 @@ const FetchAndBuild = struct {
     run_zig_build: bool,
     fetch_cache_path: []const u8,
 
-    fn init(
+    pub fn init(
         builder: *std.build.Builder,
         deps_dir: []const u8,
         deps: []const Dependency,
